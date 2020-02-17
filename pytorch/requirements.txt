@@ -1,0 +1,4 @@
+# Versions used when trained and tested
+Python 3.6.9
+Pytorch 1.2.0
+Opencv 3.4.2
