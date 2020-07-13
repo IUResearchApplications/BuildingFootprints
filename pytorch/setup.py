@@ -26,7 +26,7 @@ def setup_parameters(status):
     epochs = 80
     # Starting learning rate for the Adam optimizer
     learn_rate = 0.001
-    # Adjusts the learning rate by (learn_rate / 10 ) after every lr_change epochs
+    # Adjusts the learning rate by (learn_rate / 10) after every lr_change epochs
     lr_change = 25
     # Weighted Cross Entropy (put 1.0 for each class if you don't want to add weights)
     class_weights = [0.5, 1.0]
@@ -44,7 +44,7 @@ def setup_parameters(status):
     ### FOR TESTING ###
 
     # Model's learned parameters (i.e. weights and biases) that achieved the lowest loss
-    saved_model = 'Best_UNetmodel.model'
+    saved_model = 'best_unet_model.pt'
 
     ### FOR TESTING + METRICS ###
 

@@ -19,7 +19,7 @@ def save_model(model):
         os.mkdir(full_path)
         print ("Created folder 'saved_models'", flush=True)
 
-    save_fp = os.path.join(full_path, 'Best_UNetmodel.model')
+    save_fp = os.path.join(full_path, 'best_unet_model.pt')
     torch.save(model.state_dict(), save_fp)
     print ("Checkpoint saved", flush=True)
 
