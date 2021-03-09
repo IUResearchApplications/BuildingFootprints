@@ -5,7 +5,7 @@ import os
 import cv2
 import sys
 from scripts import dataset_class
-from setup import setup_parameters
+from test_setup import setup_parameters
 from scripts.load_dataset import test_data
 from torchvision import transforms
 from models import unet
@@ -25,9 +25,9 @@ def crop(batch, orig_dim):
     return b
 
 
-def save_pred(predictions, num_img, batch_size, output, data_set, index):
+def save_pred(predictions, num_img, batch_size, output, images_fp, index):
     # grab the file paths to all of the test images
-    fp_list = glob.glob(os.path.join(data_set, 'test_images', '*.tif'))
+    fp_list = glob.glob(os.path.join(images_fp, '*.tif'))
     fp_list.sort()
 
     full_path = os.path.join(output, 'predictions')
@@ -58,10 +58,10 @@ def load_model(model, saved_model):
                                                       map_location=torch.device('cpu')))
     return model
 
-def best_pred(model, saved_model, pred_output, data_set, batch_size, pad_size, orig_dim,
+def best_pred(model, saved_model, pred_output, images_fp, batch_size, pad_size, orig_dim,
               num_test, test_loader):
     # load the model parameters that made the best test predictions
-    model = load_model(model, saved_model)
+    model = load_model(model, saved_model + '.pt')
 
     # set the model to be ready to test
     model.eval()
@@ -73,40 +73,43 @@ def best_pred(model, saved_model, pred_output, data_set, batch_size, pad_size, o
     print ("Testing model...")
 
     # run through the batches of test images
-    for test_imgs in test_loader:
-        # use gpu for images and labels if possible
-        if torch.cuda.is_available():
-            test_imgs = test_imgs.cuda()
+    with torch.no_grad():
+        for test_imgs in test_loader:
+            # use gpu for images and labels if possible
+            if torch.cuda.is_available():
+                test_imgs = test_imgs.cuda()
 
-        # predict the classes           
-        outputs = model(test_imgs)
+            # predict the classes           
+            outputs = model(test_imgs)
 
-        # find the prediction for each pixel of an image
-        _, prediction = torch.max(outputs.data, 1)
+            # find the prediction for each pixel of an image
+            _, prediction = torch.max(outputs.data, 1)
 
-        # if the image and label were padded beforehand crop it back into its original dimensions
-        if pad_size != 0:
-            prediction = crop(prediction.float(), orig_dim)
+            # if the image and label were padded beforehand crop it back into its original dimensions
+            if pad_size != 0:
+                prediction = crop(prediction.float(), orig_dim)
 
-        save_pred(prediction.long(), num_test, batch_size, pred_output, data_set, index)
+            save_pred(prediction.long(), num_test, batch_size, pred_output, images_fp, index)
 
-        index += batch_size
+            index += batch_size
 
     print ("Done.")
 
 def main(hyperparameters, options):
     # grab the hyperparameters and options for training
-    data_set =      options['dataset']  
-    in_channels =   options['in_channels'] 
-    n_classes =     options['n_classes']
-    pred_output =   options['predictions']
-    saved_model =   options['saved_model']
-    batch_size =    hyperparameters['testing_batch_size']
-    depth =         hyperparameters['depth']
-    wf =            hyperparameters['wf']
-    padding =       hyperparameters['pad']
-    batch_norm =    hyperparameters['batch_norm']
-    up_mode =       hyperparameters['up_mode']
+    images_fp = options['images_fp']
+    lidar_fp = options['lidar_fp']
+    in_channels = options['in_channels'] 
+    n_classes = options['n_classes']
+    pred_output = options['predictions']
+    use_lidar = options['use_lidar']
+    saved_model = options['saved_model']
+    batch_size = hyperparameters['testing_batch_size']
+    depth = hyperparameters['depth']
+    wf = hyperparameters['wf']
+    padding = hyperparameters['pad']
+    batch_norm = hyperparameters['batch_norm']
+    up_mode = hyperparameters['up_mode']
 
     # use the UNet model in models dir
     # https://github.com/jvanvugt/pytorch-unet
@@ -114,25 +117,28 @@ def main(hyperparameters, options):
                       padding = padding, batch_norm = batch_norm, up_mode = up_mode)
 
     # load in the test dataset
-    test_img, orig_dim, num_test, pad_size = test_data(data_set, depth, padding)
+    test_img, test_lidar_data, orig_dim, num_test = test_data(images_fp, lidar_fp, use_lidar)
 
     # set up the custom test class
-    custom_test_class = dataset_class.CustomDatasetFromTif(test_img, [], num_test,
-                                                           test_set = True, shuffle_data = False)
+    custom_test_class = dataset_class.CustomDatasetFromTif(test_img, [], test_lidar_data, num_test,
+                                                           orig_dim, depth, test_set = True, 
+                                                           use_lidar = use_lidar)
 
     # set up the test data loader
     test_loader = DataLoader(dataset = custom_test_class, batch_size = batch_size)
+    
+    pad_size = custom_test_class.pad_size
 
     # use GPU if available, https://pytorch.org/docs/stable/notes/cuda.html
     if torch.cuda.is_available():
         model = model.cuda()
 
-    best_pred(model, saved_model, pred_output, data_set, batch_size, pad_size, orig_dim,
+    best_pred(model, saved_model, pred_output, images_fp, batch_size, pad_size, orig_dim,
               num_test, test_loader)
 
 if __name__ == '__main__':
 
     # grab the file paths and parameters
-    hyperparameters, options = setup_parameters('testing')
+    hyperparameters, options = setup_parameters()
 
     main(hyperparameters, options)  

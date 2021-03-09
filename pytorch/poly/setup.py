@@ -4,13 +4,13 @@ import os
 def setup_run(status):
     """
     This function sets up where the predictions are loaded in from and where polygonization,
-    smoothing, and rasterizing are saved to.
+    smoothing, and rasterizing are saved to. Set up to work only with GeoTIFFs.
     """
-    # File path to the predictions
-    main_path = '/file/path/to/predictions/'
+    # File path to the predictions.
+    main_path = "/file/path/to/predictions/"
 
-    # Indicate if you want to replace the original GeoTIFFs or save the new GeoTIFFs to a different
-    # directory.
+    # Indicate if you want to replace the original GeoTIFFs or save the new GeoTIFFs to a
+    # different directory.
     overwrite_tif = False
 
     if status == 'polygonize':

@@ -1,9 +1,10 @@
 import numpy as np
 import torch
+import time
 import os
 import sys
 from scripts import dataset_class
-from setup import setup_parameters
+from train_setup import setup_parameters
 from scripts.load_dataset import train_data
 from metrics import confusion_matrix
 from models import unet
@@ -11,7 +12,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 # https://github.com/jvanvugt/pytorch-unet , https://github.com/jeffwen/road_building_extraction
-def save_model(model):
+def save_model(model, file_name):
     # save the model's learned parameters at the current epoch to the saved_models dir
     # if the folder 'saved_models' doesn't exist then create one
     full_path = os.path.join(os.getcwd(), 'saved_models')
@@ -19,9 +20,15 @@ def save_model(model):
         os.mkdir(full_path)
         print ("Created folder 'saved_models'", flush=True)
 
-    save_fp = os.path.join(full_path, 'best_unet_model.pt')
+    save_fp = os.path.join(full_path, file_name + '.pt')
     torch.save(model.state_dict(), save_fp)
-    print ("Checkpoint saved", flush=True)
+
+def load_model(model, file_path):
+    if torch.cuda.is_available():
+        model.load_state_dict(torch.load(file_path))
+    else:
+        model.load_state_dict(torch.load(file_path, map_location=torch.device('cpu')))
+    return model
 
 def adjust_lr(epoch, learn_rate, optimizer, lr_change):
     # adjust the learning rate after a certain amount of epochs so the model can perform better
@@ -57,7 +64,6 @@ def train(model, training_loader, optimizer, loss, pad_size, orig_dim, num_img):
     print ("Training model...", flush=True)  
     # run through the batches of training images and labels
     for train_imgs, train_labels in training_loader:
-        
         # use GPU for images and labels if possible
         if torch.cuda.is_available():
             train_imgs = train_imgs.cuda()
@@ -99,7 +105,7 @@ def train(model, training_loader, optimizer, loss, pad_size, orig_dim, num_img):
     print ("Train acc: " + str(train_acc), "Train loss: " + str(train_loss), flush=True)  
 
 
-def valid(model, validation_loader, loss, best_loss, pad_size, orig_dim, num_img):
+def valid(model, validation_loader, loss, best_loss, pad_size, orig_dim, num_img, saved_model):
     # set the model to be ready to test on the validation set
     model.eval()
 
@@ -112,39 +118,40 @@ def valid(model, validation_loader, loss, best_loss, pad_size, orig_dim, num_img
     print ("Testing model...", flush=True)
 
     # run through the batches of validation images
-    for validation_imgs, validation_labels in validation_loader:
-        # use GPU for images if possible
-        if torch.cuda.is_available():
-            validation_imgs = validation_imgs.cuda()
-            validation_labels = validation_labels.cuda()
+    with torch.no_grad():
+        for validation_imgs, validation_labels in validation_loader:
+            # use GPU for images if possible
+            if torch.cuda.is_available():
+                validation_imgs = validation_imgs.cuda()
+                validation_labels = validation_labels.cuda()
 
-        # predict the classes (whether a pixel contains a building or not)            
-        outputs = model(validation_imgs)
+            # predict the classes (whether a pixel contains a building or not)            
+            outputs = model(validation_imgs)
 
-        # compute the loss
-        loss_output = loss(outputs, validation_labels.long())
+            # compute the loss
+            loss_output = loss(outputs, validation_labels.long())
 
-        # calculate the validation loss and find the prediction for each pixel of an image
-        validation_loss += loss_output.item() * validation_imgs.size(0)
-        _, prediction = torch.max(outputs.data, 1)
+            # calculate the validation loss and find the prediction for each pixel of an image
+            validation_loss += loss_output.item() * validation_imgs.size(0)
+            _, prediction = torch.max(outputs.data, 1)
 
-        # if the image and label were padded beforehand crop them back into their original
-        # dimensions
-        if pad_size != 0:
-            prediction = crop(prediction.float(), orig_dim)
-            validation_labels = crop(validation_labels, orig_dim)
+            # if the image and label were padded beforehand crop them back into their original
+            # dimensions
+            if pad_size != 0:
+                prediction = crop(prediction.float(), orig_dim)
+                validation_labels = crop(validation_labels, orig_dim)
 
-        for img in range(validation_labels.shape[0]):
-            # set up the confusion matrix and calculate the metrics
-            # check that there is an object to compute the metrics with
-            if torch.sum(validation_labels[img]) != 0:
-                IoU_count += 1
-                _,_,IoU = confusion_matrix(np.asarray(prediction[img].cpu()),
-                                           np.asarray(validation_labels[img].cpu()), orig_dim)
-                validation_IoU += IoU
+            for img in range(validation_labels.shape[0]):
+                # set up the confusion matrix and calculate the metrics
+                # check that there is an object to compute the metrics with
+                if torch.sum(validation_labels[img]) != 0:
+                    IoU_count += 1
+                    _,_,IoU = confusion_matrix(np.asarray(prediction[img].cpu()),
+                                               np.asarray(validation_labels[img].cpu()), orig_dim)
+                    validation_IoU += IoU
 
-        # calculate the accuracy after each batch
-        validation_acc += torch.sum(prediction.long() == validation_labels.long().data)
+            # calculate the accuracy after each batch
+            validation_acc += torch.sum(prediction.long() == validation_labels.long().data)
             
     # calculate the total accuracy, validation loss, and IoU
     validation_acc = validation_acc.item() / (float(num_img) * orig_dim * orig_dim)
@@ -158,41 +165,51 @@ def valid(model, validation_loader, loss, best_loss, pad_size, orig_dim, num_img
     print ("Val IoU: " + str(validation_IoU), flush=True)
     
     # save the model's learned parameters with the lowest loss
+    save_model(model, saved_model + "_last_epoch")
     if best_loss > validation_loss:
         best_loss = validation_loss
-        save_model(model)
+        save_model(model, saved_model)
+        print ("Checkpoint saved", flush=True)
 
     return best_loss
 
 def main(hyperparameters, options):
     # grab the hyperparameters and options for training
-    data_set =      options['dataset']  
-    in_channels =   options['in_channels'] 
-    n_classes =     options['n_classes'] 
-    augment =       options['augment']
-    class_weights =         hyperparameters['class_weights'] 
-    num_epochs =            hyperparameters['epochs']
-    learning_rate =         hyperparameters['learn_rate']
-    lr_change =             hyperparameters['lr_change']
-    training_batch_size =   hyperparameters['training_batch_size']
-    testing_batch_size =    hyperparameters['testing_batch_size']
-    depth =                 hyperparameters['depth']
-    wf =                    hyperparameters['wf']
-    padding =               hyperparameters['pad']
-    batch_norm =            hyperparameters['batch_norm']
-    up_mode =               hyperparameters['up_mode']
+    pre_trained_weights = options['pre_trained_weights']
+    start_epoch = options['start_epoch']
+    saved_model = options['saved_model']
+    dataset_fp = options['dataset_fp']  
+    in_channels = options['in_channels'] 
+    n_classes = options['n_classes'] 
+    augment = options['augment']
+    use_lidar = options['use_lidar']
+    class_weights = hyperparameters['class_weights'] 
+    num_epochs = hyperparameters['epochs']
+    learning_rate = hyperparameters['learn_rate']
+    lr_change = hyperparameters['lr_change']
+    training_batch_size = hyperparameters['training_batch_size']
+    valid_batch_size = hyperparameters['valid_batch_size']
+    depth = hyperparameters['depth']
+    wf = hyperparameters['wf']
+    padding = hyperparameters['pad']
+    batch_norm = hyperparameters['batch_norm']
+    up_mode = hyperparameters['up_mode']
 
     print ("""Running model with epochs={}, learning_rate={}, training_batch_size={},
 testing_batch_size={}, in_channels={}, n_classes={}, depth={}, wf={}, padding={},
 batch_norm={}, up_Mode={}, augment={}""".format(num_epochs, learning_rate, training_batch_size,
-                                                testing_batch_size, in_channels, n_classes,
+                                                valid_batch_size, in_channels, n_classes,
                                                 depth, wf, padding, batch_norm, up_mode,
                                                 augment), flush=True)
-
+                                            
     # use the UNet model in models dir
     # https://github.com/jvanvugt/pytorch-unet
     model = unet.UNet(in_channels = in_channels, n_classes = n_classes, depth = depth, wf = wf,
                       padding = padding, batch_norm = batch_norm, up_mode = up_mode)
+                          
+    if pre_trained_weights is not None:
+        print("Loading pre-trained weights...")
+        model = load_model(model, pre_trained_weights)
 
     # use GPU if available, https://pytorch.org/docs/stable/notes/cuda.html
     if torch.cuda.is_available():
@@ -210,36 +227,43 @@ batch_norm={}, up_Mode={}, augment={}""".format(num_epochs, learning_rate, train
     # set up the loss with the weights that were specified
     loss = torch.nn.CrossEntropyLoss(weight = loss_weights)    
 
-    # starting epoch
-    start_epoch = 1
-
     # best validation loss
     best_loss = 10000    
 
     # load in the training dataset
-    train_img, train_label, orig_dim, num_train, pad_size = train_data(data_set, depth, padding,
-                                                            augment, current_set = 'training')
+    train_img, train_label, train_lidar_data, orig_dim, num_train = train_data(dataset_fp,
+                                                                         use_lidar,
+                                                                         current_set='training')
 
     # set up the custom training class
-    custom_training_class = dataset_class.CustomDatasetFromTif(train_img, train_label, num_train)
+    custom_training_class = dataset_class.CustomDatasetFromTif(train_img, train_label, train_lidar_data, 
+                                                               num_train, orig_dim, depth,
+                                                               padding=padding, augment=augment, 
+                                                               use_lidar=use_lidar)
 
     # set up the training data loader
-    training_loader = DataLoader(dataset=custom_training_class, batch_size=training_batch_size)
+    training_loader = DataLoader(dataset=custom_training_class, batch_size=training_batch_size,
+                                 shuffle=True)
 
-    valid_img, valid_label, orig_dim, num_valid, pad_size = train_data(data_set, depth, padding,
-                                                            augment, current_set = 'validation')
+    valid_img, valid_label, valid_lidar_data, orig_dim, num_valid = train_data(dataset_fp,
+                                                                         use_lidar,
+                                                                         current_set = 'validation')
 
     # set up the custom validation class
-    custom_validation_class = dataset_class.CustomDatasetFromTif(valid_img, valid_label,
-                                                                 num_valid)
+    custom_validation_class = dataset_class.CustomDatasetFromTif(valid_img, valid_label, valid_lidar_data, 
+                                                                 num_valid, orig_dim, depth,
+                                                                 padding=padding, use_lidar=use_lidar)
 
     # set up the validation data loader
-    validation_loader = DataLoader(dataset=custom_validation_class,
-                                   batch_size=testing_batch_size)   
+    validation_loader = DataLoader(dataset=custom_validation_class, batch_size=valid_batch_size)
+                   
+    pad_size = custom_training_class.pad_size
 
+    total_time = 0
     # loop through all of the epochs
     for epoch in range(start_epoch, num_epochs + 1):
-        print("Epoch "+str(epoch), flush=True)
+        print("Epoch " + str(epoch), flush=True)
+        start = time.time()
 
         # adjust the learning rate after a certain amount of epochs
         if epoch % lr_change == 0:
@@ -248,18 +272,16 @@ batch_norm={}, up_Mode={}, augment={}""".format(num_epochs, learning_rate, train
         # run train and valid
         train(model, training_loader, optimizer, loss, pad_size, orig_dim, num_train)
         best_loss = valid(model, validation_loader, loss, best_loss, pad_size, orig_dim,
-                          num_valid)
-
-        # shuffle the training dataset after every epoch
-        custom_training_class = dataset_class.CustomDatasetFromTif(train_img, train_label,
-                                                                   num_train)
-
-        training_loader = DataLoader(dataset=custom_training_class,
-                                     batch_size=training_batch_size)
+                          num_valid, saved_model)
+        
+        end = time.time() - start
+        total_time += (end / 60)
+        print("Epoch time: {} minutes".format(end / 60))
+        print("Avg epoch time: {} minutes".format(total_time / (epoch - start_epoch + 1)))
 
 if __name__ == '__main__':
 
     # hyperparameters and options for the model
-    hyperparameters, options = setup_parameters('training')
+    hyperparameters, options = setup_parameters()
 
     main(hyperparameters, options)

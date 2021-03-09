@@ -3,7 +3,7 @@ import os
 import torch
 import glob
 import sys
-from setup import setup_parameters
+from metrics_setup import setup_parameters
 from PIL import Image
 
 def recall_calc(true_1, false_0):
@@ -23,7 +23,6 @@ def f1_calc(precision, recall):
     return f1_score
 
 def confusion_matrix(pred_segm, lb_segm, dim):
-    
     # Set uint8 -> uint16 so we can have values larger than 255
     # merge the two images together with new values where:
     # 0 = correct non-building pixel guess
@@ -121,8 +120,8 @@ def main(predictions_fp, labels_fp):
 if __name__=='__main__':
 
     # grab the file paths
-    predictions, labels = setup_parameters('metrics')
+    predictions_fp, labels_fp = setup_parameters()
 
-    main(predictions, labels)
+    main(predictions_fp, labels_fp)
 
 
